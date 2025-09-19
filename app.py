@@ -7,4 +7,5 @@ print(f"HOSTNAME: {hostname}")
 ipaddr= socket.gethostbyname(hostname)
 print(f"IP ADDRESS:{ipaddr}")
 
-for sdknakhkJA
+for i in range(10):
+    print(f"count:{i}")
