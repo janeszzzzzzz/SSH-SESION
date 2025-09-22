@@ -13,3 +13,5 @@ for i in range(10):
 num_a=int(input("DAME EL PRIMER NUMERO: "))
 num_b=int(input("DAME EL SEGUNDO NUMERO: "))
 print(f"La suma es: {num_a + num_b}")
+
+print(f"La resta es: {num_a - num_b}")
