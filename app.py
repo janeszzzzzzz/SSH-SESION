@@ -15,3 +15,5 @@ num_b=int(input("DAME EL SEGUNDO NUMERO: "))
 print(f"La suma es: {num_a + num_b}")
 
 print(f"La resta es: {num_a - num_b}")
+
+print(f"La multiplicacion es: {num_a * num_b}")
