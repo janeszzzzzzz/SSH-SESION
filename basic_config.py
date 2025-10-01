@@ -3,10 +3,17 @@ import time
 import pandas as pd
 import re
 
+
 # ========= FUNCIONES =========
 
 def obtener_modelo_serie(ser):
     """Ejecuta 'show inventory' y extrae modelo (PID) y serie (SN)."""
+    # 🔥 Asegurar que no hay comandos abiertos
+    ser.write(b"\x03\n")  # Ctrl+C
+    time.sleep(1)
+    ser.write(b"\n")      # Enter
+    time.sleep(1)
+
     ser.write(b"show inventory\n")
     time.sleep(2)
 
@@ -23,14 +30,23 @@ def obtener_modelo_serie(ser):
     return modelo, serie, salida
 
 
-def configurar_dispositivo(ser, nombre, usuario, contrasena, dominio):
-    """Envía comandos de configuración al dispositivo."""
+def configurar_dispositivo(ser, fila):
+    """Envía comandos de configuración al dispositivo con los datos de la fila."""
+
+    # 🔥 Asegurar que siempre partimos de modo EXEC privilegiado
+    ser.write(b"\x03\n")  # Ctrl+C
+    time.sleep(1)
+    ser.write(b"enable\n")
+    time.sleep(1)
+    ser.write(b"\n")
+    time.sleep(1)
+
     comandos = [
         "configure terminal",
-        f"hostname {nombre}",
-        f"username {usuario} password {contrasena}",
-        f"ip domain-name {dominio}",
-        "crypto key generate rsa",
+        f"hostname {fila['nombre']}",
+        f"username {fila['usuario']} password {fila['contrasena']}",
+        f"ip domain-name {fila['dominio']}",
+        "crypto key generate rsa modulus 1024",
     ]
 
     for cmd in comandos:
@@ -41,7 +57,6 @@ def configurar_dispositivo(ser, nombre, usuario, contrasena, dominio):
     ser.write(b"1024\n")
     time.sleep(2)
 
-    # Config extra
     extra_cmds = [
         "ip ssh version 2",
         "line console 0",
@@ -58,45 +73,36 @@ def configurar_dispositivo(ser, nombre, usuario, contrasena, dominio):
         ser.write(f"{cmd}\n".encode())
         time.sleep(1)
 
-    print(f"✅ Configuración aplicada a {nombre}")
+    print(f"✅ Configuración aplicada a {fila['nombre']}")
 
 
 def cargar_y_configurar():
-    """Lee el Excel y configura el dispositivo si hay coincidencia."""
-    df = pd.read_excel(r"C:\Users\janet\OneDrive\Documentos\Pragramcion de redes\GIT LEARNING\dispositivos_ejemplo.xlsx")
-    
+    """Lee todo el Excel y configura los dispositivos que coincidan."""
+    df = pd.read_excel(
+        r"C:\Users\janet\OneDrive\Documentos\Pragramcion de redes\GIT LEARNING\dispositivos_ejemplo.xlsx"
+    )
 
-    # Validar columnas
     columnas = {"modelo", "serie", "puerto", "baudios", "nombre", "usuario", "contrasena", "dominio"}
     if not columnas.issubset(df.columns):
         raise ValueError(f"El Excel debe tener las columnas: {columnas}")
 
-    # Tomar datos de conexión del Excel (puerto y baudios)
-    for _, fila in df.iterrows():
-        puerto = fila["puerto"]
-        baudios = int(fila["baudios"])
-
+    for puerto, baudios in df[["puerto", "baudios"]].drop_duplicates().values:
         try:
             print(f"\n🔌 Conectando al puerto {puerto}...")
-            ser = serial.Serial(puerto, baudios, timeout=2)
+            ser = serial.Serial(puerto, int(baudios), timeout=2)
             time.sleep(2)
 
-            # Obtener modelo y serie reales del dispositivo
             modelo_real, serie_real, salida = obtener_modelo_serie(ser)
             print(f"📋 Modelo detectado: {modelo_real}, Serie: {serie_real}")
 
-            # Comparar con Excel
-            if modelo_real == fila["modelo"] and serie_real == fila["serie"]:
-                print("✅ Coincidencia encontrada en Excel, configurando...")
-                configurar_dispositivo(
-                    ser,
-                    fila["nombre"],
-                    fila["usuario"],
-                    fila["contrasena"],
-                    fila["dominio"]
-                )
+            coincidencias = df[(df["modelo"] == modelo_real) & (df["serie"] == serie_real)]
+
+            if not coincidencias.empty:
+                for _, fila in coincidencias.iterrows():
+                    print("✅ Coincidencia encontrada, configurando...")
+                    configurar_dispositivo(ser, fila)
             else:
-                print("⚠️ No coincide con el Excel, se omite configuración.")
+                print("⚠️ No hay coincidencia en el Excel, se omite configuración.")
                 print("Salida completa de 'show inventory':\n", salida)
 
             ser.close()
@@ -108,6 +114,4 @@ def cargar_y_configurar():
 # ========= MAIN =========
 
 if __name__ == "__main__":
-    # Cambia esta ruta por la ubicación real de tu Excel
     cargar_y_configurar()
-
