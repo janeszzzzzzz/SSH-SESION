@@ -13,7 +13,7 @@ def obtener_modelo_serie(ser):
     time.sleep(1)
     ser.write(b"show inventory\n")
     time.sleep(3)
-
+ 
     salida = ""
     if ser.in_waiting:
         salida = ser.read(ser.in_waiting).decode(errors="ignore")
@@ -48,6 +48,34 @@ def obtener_interfaces(ser):
         print("⚠️ Error al parsear interfaces:", e)
 
     return []
+
+
+def limpiar_interfaces(parsed):
+    """
+    Filtra solo FastEthernet y GigabitEthernet.
+    Devuelve dos listas con texto bonito: Fast y Giga.
+    """
+    fast, giga = [], []
+
+    for i in parsed:
+        if not i["interface"].startswith(("FastEthernet", "GigabitEthernet")):
+            continue  # ignorar seriales y otros
+
+        estado_admin = "up" if "up" in i["status"] else "down"
+        estado_proto = i["proto"]
+        resumen = f"administration: {estado_admin}, protocol: {estado_proto}"
+
+        if i["interface"].startswith("FastEthernet"):
+            fast.append(f"{i['interface']} ({resumen})")
+        elif i["interface"].startswith("GigabitEthernet"):
+            giga.append(f"{i['interface']} ({resumen})")
+
+    # Asegurar que ambas listas tengan mismo largo
+    max_len = max(len(fast), len(giga)) if (fast or giga) else 0
+    fast.extend([""] * (max_len - len(fast)))
+    giga.extend([""] * (max_len - len(giga)))
+
+    return fast, giga
 
 
 def configurar_dispositivo(ser, fila):
@@ -114,14 +142,16 @@ def cargar_y_configurar():
                     print("✅ Coincidencia encontrada, configurando...")
                     configurar_dispositivo(ser, fila)
 
-                    # 🔥 Obtener interfaces
+                    # 🔥 Obtener interfaces y limpiar
                     interfaces = obtener_interfaces(ser)
-
-                    # Convertir a texto para guardar en Excel
                     if interfaces:
-                        df.at[idx, "interfaces"] = str(interfaces)
+                        fast, giga = limpiar_interfaces(interfaces)
+                        # Guardar como texto unido por salto de línea
+                        df.at[idx, "FastEthernet"] = "\n".join(fast)
+                        df.at[idx, "GigabitEthernet"] = "\n".join(giga)
                     else:
-                        df.at[idx, "interfaces"] = "No detectadas"
+                        df.at[idx, "FastEthernet"] = "No detectadas"
+                        df.at[idx, "GigabitEthernet"] = "No detectadas"
 
             else:
                 print("⚠️ No hay coincidencia en el Excel, se omite configuración.")
