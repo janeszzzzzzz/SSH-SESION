@@ -1,6 +1,7 @@
 import serial
 import time
 import pandas as pd
+import ipaddress
 import textfsm
 from ntc_templates.parse import parse_output
 
@@ -104,6 +105,60 @@ def configurar_dispositivo(ser, fila):
     print(f"✅ Configuración aplicada a {fila['nombre']}")
 
 
+def configurar_ip_interfaz(ser, df, idx):
+    """Permite elegir interfaz e ingresar IP y máscara, validando errores."""
+    print("\n=== Configuración de IP en interfaz ===")
+
+    interfaces = obtener_interfaces(ser)
+    if not interfaces:
+        print("⚠️ No se pudieron obtener interfaces.")
+        return
+
+    print("\nInterfaces disponibles:")
+    for num, i in enumerate(interfaces, start=1):
+        print(f"{num}. {i['interface']}  (IP: {i['ip_address']})")
+
+    try:
+        seleccion = int(input("\n👉 Ingresa el número de la interfaz a configurar: ")) - 1
+        if seleccion < 0 or seleccion >= len(interfaces):
+            print("❌ Opción inválida.")
+            return
+        interfaz = interfaces[seleccion]['interface']
+    except ValueError:
+        print("❌ Entrada no válida.")
+        return
+
+    ip = input(f"🧠 Ingresa la IP para {interfaz}: ")
+    mascara = input("🧠 Ingresa la máscara de subred (ej. 255.255.255.0): ")
+
+    try:
+        ipaddress.IPv4Address(ip)
+        ipaddress.IPv4Network(f"{ip}/{mascara}", strict=False)
+    except ValueError:
+        print("❌ IP o máscara inválidas. Intenta de nuevo.")
+        return
+
+    print(f"\n🔧 Configurando {interfaz} con IP {ip} {mascara}...")
+
+    comandos = [
+        "configure terminal",
+        f"interface {interfaz}",
+        f"ip address {ip} {mascara}",
+        "no shutdown",
+        "end",
+        "write memory",
+    ]
+
+    for cmd in comandos:
+        ser.write(f"{cmd}\n".encode())
+        time.sleep(1)
+
+    print(f"✅ Interfaz {interfaz} configurada correctamente con {ip}/{mascara}.")
+
+    # 🔄 Actualizar Excel con los nuevos datos desde el router
+    interfaces_actualizadas = obtener_interfaces(ser)
+    interfaces_a_columnas(df, idx, interfaces_actualizadas)
+
 def cargar_y_configurar():
     """Lee Excel, configura dispositivos coincidentes y exporta interfaces."""
     ruta_excel = r"C:\Users\janet\OneDrive\Documentos\Pragramcion de redes\GIT LEARNING\dispositivos_ejemplo.xlsx"
@@ -135,6 +190,10 @@ def cargar_y_configurar():
                         interfaces_a_columnas(df, idx, interfaces)
                     else:
                         df.at[idx, "Interfaces"] = "No detectadas"
+
+                    # 💡 Opción adicional para configurar IP
+                    configurar_ip_interfaz(ser, df, idx)
+
 
             else:
                 print("⚠️ No hay coincidencia en el Excel, se omite configuración.")
