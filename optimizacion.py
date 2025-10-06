@@ -13,7 +13,7 @@ def obtener_modelo_serie(ser):
     time.sleep(1)
     ser.write(b"show inventory\n")
     time.sleep(3)
- 
+
     salida = ""
     if ser.in_waiting:
         salida = ser.read(ser.in_waiting).decode(errors="ignore")
@@ -50,32 +50,19 @@ def obtener_interfaces(ser):
     return []
 
 
-def limpiar_interfaces(parsed):
+def interfaces_a_columnas(df, idx, interfaces):
     """
-    Filtra solo FastEthernet y GigabitEthernet.
-    Devuelve dos listas con texto bonito: Fast y Giga.
+    Agrega dinámicamente cada interfaz como columnas en la fila correspondiente.
+    Ejemplo: Fa0/0_IP, Fa0/0_STATUS, Fa0/0_PROTO
     """
-    fast, giga = [], []
+    for i in interfaces:
+        nombre = i.get("interface")
+        if not nombre or not nombre.startswith(("FastEthernet", "GigabitEthernet")):
+            continue  # ignoramos seriales y otras
 
-    for i in parsed:
-        if not i["interface"].startswith(("FastEthernet", "GigabitEthernet")):
-            continue  # ignorar seriales y otros
-
-        estado_admin = "up" if "up" in i["status"] else "down"
-        estado_proto = i["proto"]
-        resumen = f"administration: {estado_admin}, protocol: {estado_proto}"
-
-        if i["interface"].startswith("FastEthernet"):
-            fast.append(f"{i['interface']} ({resumen})")
-        elif i["interface"].startswith("GigabitEthernet"):
-            giga.append(f"{i['interface']} ({resumen})")
-
-    # Asegurar que ambas listas tengan mismo largo
-    max_len = max(len(fast), len(giga)) if (fast or giga) else 0
-    fast.extend([""] * (max_len - len(fast)))
-    giga.extend([""] * (max_len - len(giga)))
-
-    return fast, giga
+        df.at[idx, f"{nombre}_IP"] = i.get("ip_address", "")
+        df.at[idx, f"{nombre}_STATUS"] = i.get("status", "")
+        df.at[idx, f"{nombre}_PROTO"] = i.get("proto", "")
 
 
 def configurar_dispositivo(ser, fila):
@@ -142,16 +129,12 @@ def cargar_y_configurar():
                     print("✅ Coincidencia encontrada, configurando...")
                     configurar_dispositivo(ser, fila)
 
-                    # 🔥 Obtener interfaces y limpiar
+                    # 🔥 Obtener interfaces y pasarlas a columnas
                     interfaces = obtener_interfaces(ser)
                     if interfaces:
-                        fast, giga = limpiar_interfaces(interfaces)
-                        # Guardar como texto unido por salto de línea
-                        df.at[idx, "FastEthernet"] = "\n".join(fast)
-                        df.at[idx, "GigabitEthernet"] = "\n".join(giga)
+                        interfaces_a_columnas(df, idx, interfaces)
                     else:
-                        df.at[idx, "FastEthernet"] = "No detectadas"
-                        df.at[idx, "GigabitEthernet"] = "No detectadas"
+                        df.at[idx, "Interfaces"] = "No detectadas"
 
             else:
                 print("⚠️ No hay coincidencia en el Excel, se omite configuración.")
