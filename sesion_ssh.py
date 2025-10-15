@@ -4,12 +4,10 @@ from netmiko import ConnectHandler
 from getpass import getpass
 
 # ============================= #
-# Plantillas TextFSM corregidas
+# Plantillas TextFSM corregidas #
 # ============================= #
 
-# Para 'show ip arp' según salida real de tu SW2
-TEMPLATE_ARP = """\
-Value IP (\d+\.\d+\.\d+\.\d+)
+TEMPLATE_ARP = r"""Value IP (\d+\.\d+\.\d+\.\d+)
 Value MAC ([0-9a-fA-F.]+)
 Value INTERFACE (\S+)
 
@@ -17,9 +15,7 @@ Start
   ^Internet\s+${IP}\s+\S+\s+${MAC}\s+ARPA\s+${INTERFACE} -> Record
 """
 
-# Para 'show mac address-table' estándar Cisco
-TEMPLATE_MAC = """\
-Value VLAN (\d+)
+TEMPLATE_MAC = r"""Value VLAN (\d+)
 Value MAC ([0-9a-fA-F.]+)
 Value TYPE (\S+)
 Value PORT (\S+)
@@ -28,44 +24,59 @@ Start
   ^\s*${VLAN}\s+${MAC}\s+${TYPE}\s+${PORT} -> Record
 """
 
+TEMPLATE_CDP = r"""Value DEVICE_ID (\S+)
+Value LOCAL_INT (\S+)
+Value HOLDTIME (\d+)
+Value CAPABILITIES (.+?)
+Value PLATFORM (\S+)
+Value PORT_ID (\S+)
+
+Start
+  ^Device ID: ${DEVICE_ID}
+  ^Interface: ${LOCAL_INT},  +Port ID \(outgoing port\): ${PORT_ID} -> Record
+"""
+
 # ============================= #
-# Funciones auxiliares
+# Funciones auxiliares          #
 # ============================= #
 
-def compilar_plantilla(texto):
-    """Compila una plantilla TextFSM desde un string."""
-    return textfsm.TextFSM(io.StringIO(texto))
+def compilar(plantilla):
+    """Compila un texto TextFSM desde string."""
+    return textfsm.TextFSM(io.StringIO(plantilla))
 
-def buscar_mac_por_ip(salida_arp, ip_objetivo):
-    """Busca la MAC de una IP en la tabla ARP."""
-    fsm = compilar_plantilla(TEMPLATE_ARP)
-    registros = fsm.ParseText(salida_arp)
-    for ip, mac, interfaz in registros:
-        if ip == ip_objetivo:
-            return mac
+def buscar_mac_por_ip(salida_arp, ip):
+    """Devuelve la MAC asociada a una IP."""
+    fsm = compilar(TEMPLATE_ARP)
+    for registro in fsm.ParseText(salida_arp):
+        if registro[0] == ip:
+            return registro[1]
     return None
 
-def buscar_puerto_por_mac(salida_mac, mac_objetivo):
-    """Busca el puerto asociado a una MAC en la tabla MAC."""
-    fsm = compilar_plantilla(TEMPLATE_MAC)
-    registros = fsm.ParseText(salida_mac)
-    for vlan, mac, tipo, puerto in registros:
-        if mac.lower() == mac_objetivo.lower():
+def buscar_puerto_por_mac(salida_mac, mac):
+    """Devuelve el puerto asociado a una MAC."""
+    fsm = compilar(TEMPLATE_MAC)
+    for vlan, mac_reg, tipo, puerto in fsm.ParseText(salida_mac):
+        if mac_reg.lower() == mac.lower():
             return puerto
     return None
 
+def obtener_vecinos_cdp(salida_cdp):
+    """Devuelve diccionario de puertos locales -> nombres de vecinos CDP."""
+    fsm = compilar(TEMPLATE_CDP)
+    return {local: device for device, local, *_ in fsm.ParseText(salida_cdp)}
+
 # ============================= #
-# Programa principal
+# Función recursiva principal   #
 # ============================= #
 
-def main():
-    print("\n=== Localizador de dispositivos por IP (usa switch como fuente) ===\n")
+def buscar_dispositivo(ip_switch, usuario, contrasena, ip_objetivo, visitados=None):
+    if visitados is None:
+        visitados = set()
+    if ip_switch in visitados:
+        return None
+    visitados.add(ip_switch)
 
-    ip_switch = input("¿Qué IP del switch quieres usar para buscar? (ej. 192.168.1.11): ").strip()
-    ip_objetivo = input("¿Qué IP del dispositivo quieres encontrar? (ej. 192.168.1.50): ").strip()
-    usuario = input("Usuario SSH (por defecto 'admin'): ").strip() or "admin"
-    contrasena = getpass("Contraseña SSH: ")
-
+    print(f"\n🔗 Conectando a {ip_switch}...")
     dispositivo = {
         "device_type": "cisco_ios",
         "host": ip_switch,
@@ -74,37 +85,62 @@ def main():
     }
 
     try:
-        print("\nConectando al switch... aguanta, que ya casi llegamos. 🤖")
         conexion = ConnectHandler(**dispositivo)
     except Exception as e:
-        print("\n💥 Error al conectar por SSH:", e)
-        print("\nVerifica:")
-        print("1️⃣ Que el switch tenga habilitado SSH (ip domain-name, crypto key generate rsa, transport input ssh)")
-        print("2️⃣ Que el usuario tenga privilegios 15.")
-        print("3️⃣ Que el puerto 22 no esté bloqueado por firewall.\n")
-        return
+        print(f"⚠️ Error al conectar a {ip_switch}: {e}")
+        return None
 
-    print("\n📡 Ejecutando comandos 'show ip arp' y 'show mac address-table'...\n")
+    # Obtener hostname del switch
+    hostname = conexion.send_command("show run | include hostname").replace("hostname", "").strip() or ip_switch
+
     salida_arp = conexion.send_command("show ip arp")
     salida_mac = conexion.send_command("show mac address-table")
+    salida_cdp = conexion.send_command("show cdp neighbors detail")
 
-    mac_encontrada = buscar_mac_por_ip(salida_arp, ip_objetivo)
+    mac = buscar_mac_por_ip(salida_arp, ip_objetivo)
+    if not mac:
+        conexion.disconnect()
+        return None
 
-    if mac_encontrada:
-        print(f"✅ IP {ip_objetivo} tiene la MAC {mac_encontrada}")
-        puerto = buscar_puerto_por_mac(salida_mac, mac_encontrada)
-        if puerto:
-            print(f"🔌 El dispositivo está conectado al puerto: {puerto}\n")
-        else:
-            print("⚠️ No se encontró el puerto en la tabla MAC.\n")
+    puerto = buscar_puerto_por_mac(salida_mac, mac)
+    vecinos = obtener_vecinos_cdp(salida_cdp)
+
+    if puerto in vecinos:
+        next_switch_name = vecinos[puerto]
+        print(f"↪️ MAC aprendida en {puerto} (vecino detectado: {next_switch_name})")
+        conexion.disconnect()
+        # Aquí podrías mapear el nombre de vecino a su IP manualmente
+        # o resolverlo con show cdp entry <name>
+        return buscar_dispositivo(ip_switch, usuario, contrasena, ip_objetivo, visitados)
     else:
-        print("❌ No se encontró esa IP en la tabla ARP.\n")
-
-    conexion.disconnect()
-    print("🔌 Conexión cerrada.\n")
+        print(f"\n✅ Dispositivo encontrado en {hostname} ({ip_switch})")
+        print(f"🔌 Puerto: {puerto}")
+        print(f"💾 MAC Address: {mac}\n")
+        conexion.disconnect()
+        return {
+            "switch": hostname,
+            "ip_switch": ip_switch,
+            "puerto": puerto,
+            "mac": mac
+        }
 
 # ============================= #
-# Punto de entrada
+# Programa principal            #
+# ============================= #
+
+def main():
+    print("\n=== 🚀 Localizador inteligente de dispositivos ===\n")
+    ip_inicial = input("IP de un switch cualquiera: ").strip()
+    ip_objetivo = input("IP del dispositivo que quieres encontrar: ").strip()
+    usuario = input("Usuario SSH (por defecto 'admin'): ").strip() or "admin"
+    contrasena = getpass("Contraseña SSH: ")
+
+    resultado = buscar_dispositivo(ip_inicial, usuario, contrasena, ip_objetivo)
+    if not resultado:
+        print("\n❌ No se encontró el dispositivo en la red.\n")
+
+# ============================= #
+# Punto de entrada              #
 # ============================= #
 
 if __name__ == "__main__":
